@@ -42,9 +42,14 @@ def query_pinecone(query_text):
         top_k=2,
         include_values=True,
         include_metadata=True,
-        filter={"genre": {"$eq": "action"}}
+        # filter={"genre": {"$eq": "action"}}
     )
-    return results
+
+    extracted_text = [
+        item['metadata'].get('text', None) for item in results['matches']
+    ]
+
+    return extracted_text
 
 # Test the query
 
