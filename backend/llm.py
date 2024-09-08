@@ -1,55 +1,65 @@
 from dotenv import load_dotenv
 import os
+from flask import Flask, jsonify, request
+
+app = Flask(__name__)
 
 load_dotenv()
 
-groq_api_key = os.getenv("GROQ_API_KEY")
-langchain_api_key = os.getenv("LANGCHAIN_API_KEY")
+# Environment Variables
 openai_api_key = os.getenv("OPENAI_API_KEY")
-os.environ["LANGCHAIN_TRACING_V2"] = "true"
+pinecone_api_key = os.getenv("PINECONE_API_KEY")
 
-from langchain_groq import ChatGroq
+# Initialize Pinecone
+from pinecone import Pinecone, ServerlessSpec
+pc = Pinecone(api_key=pinecone_api_key)
+index_name = "test2"
 
-llm = ChatGroq(model="llama3-8b-8192")
+if index_name not in pc.list_indexes().names():
+    pc.create_index(
+        name=index_name,
+        dimension=1536,  # Ensure this matches your OpenAI model's dimensionality
+        metric="euclidean",
+        spec=ServerlessSpec(cloud="aws", region="us-east-1")
+    )
 
-import bs4
-from langchain import hub
-from langchain_chroma import Chroma
-from langchain_community.document_loaders import WebBaseLoader
-from langchain_core.output_parsers import StrOutputParser
-from langchain_core.runnables import RunnablePassthrough
+index = pc.Index(index_name)
+
+# Initialize OpenAI Embeddings
 from langchain_openai import OpenAIEmbeddings
-from langchain_text_splitters import RecursiveCharacterTextSplitter
+embeddings = OpenAIEmbeddings(openai_api_key=openai_api_key)
 
-# Load, chunk and index the contents of the blog.
-loader = WebBaseLoader(
-    web_paths=("https://lilianweng.github.io/posts/2023-06-23-agent/",),
-    bs_kwargs=dict(
-        parse_only=bs4.SoupStrainer(
-            class_=("post-content", "post-title", "post-header")
-        )
-    ),
-)
-docs = loader.load()
+# Function to generate query vector
+def generate_query_vector(text):
+    return embeddings.embed_documents([text])[0]
 
-text_splitter = RecursiveCharacterTextSplitter(chunk_size=1000, chunk_overlap=200)
-splits = text_splitter.split_documents(docs)
-vectorstore = Chroma.from_documents(documents=splits, embedding=OpenAIEmbeddings())
+# Function to query Pinecone
+def query_pinecone(query_text):
+    query_vector = generate_query_vector(query_text)
+    results = index.query(
+        namespace="ns1",
+        vector=query_vector,
+        top_k=2,
+        include_values=True,
+        include_metadata=True,
+        filter={"genre": {"$eq": "action"}}
+    )
+    return results
 
-# Retrieve and generate using the relevant snippets of the blog.
-retriever = vectorstore.as_retriever()
-prompt = hub.pull("rlm/rag-prompt")
+# Test the query
+
+query_text = "example query text"
+results = query_pinecone(query_text)
+print(results)
 
 
-def format_docs(docs):
-    return "\n\n".join(doc.page_content for doc in docs)
+@app.route('/')
+def home():
+    return jsonify(message="Hello, API!")
 
+@app.route('/query_text', methods=['POST'])
+def query_text(text: str):
+    return query_pinecone(text)
 
-rag_chain = (
-    {"context": retriever | format_docs, "question": RunnablePassthrough()}
-    | prompt
-    | llm
-    | StrOutputParser()
-)
-
-print(rag_chain.invoke("What is Task Decomposition?"))
+if __name__ == '__main__':
+    app.run(debug=True)  # Set debug=False for production
